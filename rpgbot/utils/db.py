@@ -91,43 +91,67 @@ class InventoryRepo:
         self.db = db
 
     def add_item_to_player(self, player_id: int, item_id: int, quantity: int = 1):
-        # Проверяем, есть ли предмет у игрока
-        existing = self.db.fetchone(
-            "SELECT id, quantity FROM inventory WHERE player_id=? AND item_id=?",
-            (player_id, item_id),
-        )
-
         # Узнаём max_count для предмета
         item = self.db.fetchone("SELECT max_count FROM items WHERE id=?", (item_id,))
         max_count = item[0] if item else 9
 
+        # Проверяем, есть ли предмет у игрока
+        existing = self.db.fetchone(
+            "SELECT id, quantity FROM inventory WHERE player_id=? AND item_id=? ORDER BY id DESC",
+            (player_id, item_id),
+        )
+
         if existing:
             inv_id, current_qty = existing
-            new_qty = min(current_qty + quantity, max_count)
-            self.db.execute(
-                "UPDATE inventory SET quantity=? WHERE id=?", (new_qty, inv_id)
-            )
-        else:
-            # Проверяем количество слотов у игрока
-            slots = self.db.fetchone(
-                "SELECT COUNT(*) FROM inventory WHERE player_id=?", (player_id,)
-            )[0]
+            new_qty = current_qty + quantity
 
-            max_slots = self.db.fetchone(
-                "SELECT max_inventory_slots FROM players WHERE id=?", (player_id,)
-            )[0]
-
-            if slots < max_slots:
+            if new_qty <= max_count:
                 self.db.execute(
-                    "INSERT INTO inventory (player_id, item_id, quantity) VALUES (?, ?, ?)",
-                    (player_id, item_id, min(quantity, max_count)),
+                    "UPDATE inventory SET quantity=? WHERE id=?", (new_qty, inv_id)
                 )
             else:
-                raise Exception("Инвентарь заполнен!")
+                self.db.execute(
+                    "UPDATE inventory SET quantity=? WHERE id=?", (max_count, inv_id)
+                )
+
+                leftover = new_qty - max_count
+                self.db.execute(
+                    "INSERT INTO inventory (player_id, item_id, quantity) VALUES (?, ?, ?)",
+                    (player_id, item_id, leftover),
+                )
+        else:
+            self.db.execute(
+                "INSERT INTO inventory (player_id, item_id, quantity) VALUES (?, ?, ?)",
+                (player_id, item_id, min(quantity, max_count)),
+            )
+            leftover = quantity - max_count
+            while leftover > 0:
+                qty = min(leftover, max_count)
+                self.db.execute(
+                    "INSERT INTO inventory (player_id, item_id, quantity) VALUES (?, ?, ?)",
+                    (player_id, item_id, qty),
+                )
+                leftover -= qty
 
     def get_inventory(self, player_id: int) -> List[Tuple]:
         return self.db.fetchall(
             "SELECT * FROM inventory WHERE player_id=?", (player_id,)
+        )
+
+    def get_player_items(self, player_id: int) -> List[Tuple]:
+        """
+        Возвращает список предметов игрока с названием, типом, количеством и флагами использования.
+        Формат: (item_id, name, type, quantity, usable_in_fight, usable_in_profile)
+        """
+        return self.db.fetchall(
+            """
+            SELECT items.id, items.name, items.type, inventory.quantity,
+                items.usable_in_fight, items.usable_in_profile
+            FROM inventory
+            JOIN items ON inventory.item_id = items.id
+            WHERE inventory.player_id=?
+            """,
+            (player_id,),
         )
 
 

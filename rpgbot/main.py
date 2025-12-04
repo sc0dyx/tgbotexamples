@@ -5,25 +5,26 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from config import BOT_TOKEN
 from setup import Init
-from handlers import start, profile, fight, shop, quests
+from handlers import start, profile, fight, shop, quests, inventory
+from states.battleblock import router as rt
 
 
 async def main():
-    # Автоматическая инициализация базы
     Init.setup_all()
 
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 
     dp = Dispatcher()
 
-    # Подключаем роутеры
+    dp.include_router(rt)
+
     dp.include_router(start.router)
     dp.include_router(profile.router)
     dp.include_router(fight.router)
     dp.include_router(shop.router)
     dp.include_router(quests.router)
+    dp.include_router(inventory.router)
 
-    # Запуск
     await dp.start_polling(bot)
 
 

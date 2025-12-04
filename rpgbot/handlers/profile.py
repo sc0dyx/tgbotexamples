@@ -1,5 +1,6 @@
 from aiogram import Router, types, F
 
+from utils.leveling import exp_required
 from utils.db import Database, PlayerRepo
 from config import DB_PATH
 
@@ -12,7 +13,6 @@ player_repo = PlayerRepo(db)
 async def show_profile(callback: types.CallbackQuery):
     player = player_repo.get_player(callback.from_user.id)
     if player:
-        # player = (id, name, class, level, hp, max_hp, mana, max_mana, exp, gold, diamonds)
         (
             _,
             name,
@@ -30,12 +30,18 @@ async def show_profile(callback: types.CallbackQuery):
 
         kb = types.InlineKeyboardMarkup(
             inline_keyboard=[
-                [types.InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")]
+                [
+                    types.InlineKeyboardButton(
+                        text="📦 Инвентарь", callback_data="inventory:profile"
+                    )
+                ],
+                [types.InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")],
             ]
         )
 
+        exp_to_next = exp_required(lvl)
         await callback.message.edit_text(
-            f"👤 {name}\n⚔️ Класс: {cls}\n⭐ Уровень: {lvl}\n❤️ HP: {hp}/{max_hp}\n🔮 Mana: {mana}/{max_mana}\n📈 EXP: {exp}\n💰 Gold: {gold}\n💎 Diamonds: {diamonds}",
+            f"👤 {name}\n⚔️ Класс: {cls}\n⭐ Уровень: {lvl}\n❤️ HP: {hp}/{max_hp}\n🔮 Mana: {mana}/{max_mana}\n📈 EXP: {exp}/{exp_to_next}\n💰 Gold: {gold}\n💎 Diamonds: {diamonds}",
             reply_markup=kb,
         )
     else:

@@ -26,7 +26,6 @@ async def cmd_start(msg: types.Message):
     player = player_repo.get_player(msg.from_user.id)
 
     if player is None:
-        # Кнопки выбора класса
         await msg.answer("Выбери класс персонажа:", reply_markup=kb_class.as_markup())
 
     else:
@@ -37,7 +36,6 @@ async def cmd_start(msg: types.Message):
 async def back(callback: types.CallbackQuery):
     player = player_repo.get_player(callback.from_user.id)
     if player is None:
-        # Кнопки выбора класса
         await callback.message.edit_text(
             "Выбери класс персонажа:", reply_markup=kb_class.as_markup()
         )

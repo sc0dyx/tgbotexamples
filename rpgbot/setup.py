@@ -1,5 +1,3 @@
-# setup.py (фрагмент)
-
 import sqlite3
 from config import DB_PATH, DEFAULT_HP, DEFAULT_GOLD, DEFAULT_DIAMONDS, DEFAULT_MANA
 
@@ -71,9 +69,31 @@ class Init:
                 power INTEGER,
                 max_count INTEGER DEFAULT 9,
                 price_gold INTEGER,
-                price_diamonds INTEGER
+                price_diamonds INTEGER,
+                usable_in_fight INTEGER DEFAULT 0,
+                usable_in_profile INTEGER DEFAULT 0
             )
             """)
+            cur.execute("SELECT COUNT(*) FROM items")
+            count = cur.fetchone()[0]
+            if count == 0:
+                cur.executemany(
+                    """
+                    INSERT INTO items (name, type, power, max_count, price_gold, price_diamonds, usable_in_fight, usable_in_profile)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        # Зелья: можно использовать и в бою, и в профиле
+                        ("Зелье здоровья", "potion_hp", 50, 9, 20, 0, 1, 1),
+                        ("Зелье маны", "potion_mana", 30, 9, 15, 0, 1, 1),
+                        # Оружие: лежит в инвентаре, не используется напрямую
+                        ("Меч", "weapon_warrior", 15, 1, 100, 0, 0, 0),
+                        ("Волшебная палочка", "weapon_mage", 20, 1, 120, 0, 0, 0),
+                        ("Нож", "weapon_rogue", 10, 1, 80, 0, 0, 0),
+                        # Бомба: можно использовать только в бою
+                        ("Бомба", "bomb", 100, 9, 0, 5, 1, 0),
+                    ],
+                )
             conn.commit()
 
     @staticmethod

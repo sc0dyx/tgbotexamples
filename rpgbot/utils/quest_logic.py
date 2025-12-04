@@ -1,5 +1,3 @@
-# utils/quest_logic.py
-
 from utils.db import Database, QuestRepo, PlayerRepo, InventoryRepo
 from config import DB_PATH
 
@@ -57,23 +55,20 @@ def check_quests(player_id: int, event_type: str, target_id: int, amount: int = 
         if cond_type != event_type:
             continue
         if cond_type == "kill_mob":
-            if target == 0 or target == target_id:  # 0 = любой моб
+            if target == 0 or target == target_id:
                 progress += amount
         elif cond_type == "collect_item":
             if target == target_id:
                 progress += amount
         elif cond_type == "reach_level":
-            # для reach_level нет накопления: проверяем уровень напрямую
             if target_id >= target:
                 progress = cond_amount
 
-        # сохраняем прогресс
         db.execute(
             "UPDATE player_quests SET progress=? WHERE player_id=? AND quest_id=?",
             (progress, player_id, quest_id),
         )
 
-        # завершение
         if progress >= cond_amount:
             messages.append(complete_quest(player_id, quest_id))
 

@@ -22,7 +22,8 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from config import BOT_TOKEN
 from setup import Init
-from handlers import start, profile, fight, shop, quests
+from handlers import start, profile, fight, shop, quests, inventory
+from states.battleblock import router as rt
 
 
 async def main():
@@ -34,11 +35,15 @@ async def main():
     dp = Dispatcher()
 
     # Подключаем роутеры
+
+    dp.include_router(rt)
+
     dp.include_router(start.router)
     dp.include_router(profile.router)
     dp.include_router(fight.router)
     dp.include_router(shop.router)
     dp.include_router(quests.router)
+    dp.include_router(inventory.router)
 
     # Запуск
     await dp.start_polling(bot)
@@ -46,6 +51,8 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+# setup.py (фрагмент)
+
 import sqlite3
 from config import DB_PATH, DEFAULT_HP, DEFAULT_GOLD, DEFAULT_DIAMONDS, DEFAULT_MANA
 
@@ -55,8 +62,7 @@ class Init:
     def create_players():
         with sqlite3.connect(DB_PATH) as conn:
             cur = conn.cursor()
-            cur.execute(
-                f"""
+            cur.execute(f"""
             CREATE TABLE IF NOT EXISTS players (
                 id INTEGER PRIMARY KEY,
                 name TEXT,
@@ -71,8 +77,7 @@ class Init:
                 gold INTEGER DEFAULT {DEFAULT_GOLD},
                 diamonds INTEGER DEFAULT {DEFAULT_DIAMONDS}
             )
-            """
-            )
+            """)
             conn.commit()
 
     @staticmethod
@@ -90,15 +95,14 @@ class Init:
                 drop_item_id INTEGER
             )
             """)
-            # Добавляем базовых мобов, если таблица пустая
             cur.execute("SELECT COUNT(*) FROM mobs")
             count = cur.fetchone()[0]
             if count == 0:
                 cur.executemany(
                     """
-                INSERT INTO mobs (name, hp, attack, exp_reward, gold_reward, drop_item_id)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
+                    INSERT INTO mobs (name, hp, attack, exp_reward, gold_reward, drop_item_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
                     [
                         ("Слизень", 30, 5, 10, 5, None),
                         ("Гоблин", 50, 10, 20, 10, None),
@@ -120,9 +124,31 @@ class Init:
                 power INTEGER,
                 max_count INTEGER DEFAULT 9,
                 price_gold INTEGER,
-                price_diamonds INTEGER
+                price_diamonds INTEGER,
+                usable_in_fight INTEGER DEFAULT 0,
+                usable_in_profile INTEGER DEFAULT 0
             )
             """)
+            cur.execute("SELECT COUNT(*) FROM items")
+            count = cur.fetchone()[0]
+            if count == 0:
+                cur.executemany(
+                    """
+                    INSERT INTO items (name, type, power, max_count, price_gold, price_diamonds, usable_in_fight, usable_in_profile)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        # Зелья: можно использовать и в бою, и в профиле
+                        ("Зелье здоровья", "potion_hp", 50, 9, 20, 0, 1, 1),
+                        ("Зелье маны", "potion_mana", 30, 9, 15, 0, 1, 1),
+                        # Оружие: лежит в инвентаре, не используется напрямую
+                        ("Меч", "weapon_warrior", 15, 1, 100, 0, 0, 0),
+                        ("Волшебная палочка", "weapon_mage", 20, 1, 120, 0, 0, 0),
+                        ("Нож", "weapon_rogue", 10, 1, 80, 0, 0, 0),
+                        # Бомба: можно использовать только в бою
+                        ("Бомба", "bomb", 100, 9, 0, 5, 1, 0),
+                    ],
+                )
             conn.commit()
 
     @staticmethod
@@ -144,24 +170,21 @@ class Init:
         with sqlite3.connect(DB_PATH) as conn:
             cur = conn.cursor()
             cur.execute("""
-                            
-                CREATE TABLE IF NOT EXISTS quests (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    title TEXT NOT NULL,
-                    description TEXT,
-                    reward_exp INTEGER,
-                    reward_gold INTEGER,
-                    reward_item_id INTEGER,
-                    condition_type TEXT NOT NULL,       -- тип условия: kill_mob, collect_item, reach_level
-                    condition_target INTEGER NOT NULL,  -- ID моба, предмета или уровень
-                    condition_amount INTEGER DEFAULT 1   -- сколько нужно (например: убить 3 моба, собрать 5 предметов)
-                )
-
+            CREATE TABLE IF NOT EXISTS quests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                description TEXT,
+                reward_exp INTEGER,
+                reward_gold INTEGER,
+                reward_item_id INTEGER,
+                condition_type TEXT NOT NULL,       -- kill_mob, collect_item, reach_level
+                condition_target INTEGER NOT NULL,  -- mob_id / item_id / level
+                condition_amount INTEGER DEFAULT 1
+            )
             """)
             conn.commit()
             cur.execute("SELECT COUNT(*) FROM quests")
             count = cur.fetchone()[0]
-
             if count == 0:
                 cur.executemany(
                     """
@@ -205,13 +228,12 @@ class Init:
                             50,
                             50,
                             None,
-                            "kill_mob",
+                            "kill_mоб",
                             4,
                             1,
                         ),
                     ],
                 )
-
             conn.commit()
 
     @staticmethod
@@ -239,7 +261,8 @@ class Init:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 player_id INTEGER,
                 quest_id INTEGER,
-                status TEXT DEFAULT 'active'
+                status TEXT DEFAULT 'active',
+                progress INTEGER DEFAULT 0
             )
             """)
             conn.commit()
@@ -254,10 +277,6 @@ class Init:
         Init.create_battles()
         Init.create_player_quests()
         print("✅ Все таблицы созданы/проверены!")
-
-
-if __name__ == "__main__":
-    Init.setup_all()
 import sqlite3
 from typing import Optional, List, Tuple
 from config import DB_PATH, DEFAULT_HP, DEFAULT_MANA, DEFAULT_DIAMONDS, DEFAULT_GOLD
@@ -351,43 +370,70 @@ class InventoryRepo:
         self.db = db
 
     def add_item_to_player(self, player_id: int, item_id: int, quantity: int = 1):
-        # Проверяем, есть ли предмет у игрока
-        existing = self.db.fetchone(
-            "SELECT id, quantity FROM inventory WHERE player_id=? AND item_id=?",
-            (player_id, item_id),
-        )
-
         # Узнаём max_count для предмета
         item = self.db.fetchone("SELECT max_count FROM items WHERE id=?", (item_id,))
         max_count = item[0] if item else 9
 
+        # Проверяем, есть ли предмет у игрока
+        existing = self.db.fetchone(
+            "SELECT id, quantity FROM inventory WHERE player_id=? AND item_id=? ORDER BY id DESC",
+            (player_id, item_id),
+        )
+
         if existing:
             inv_id, current_qty = existing
-            new_qty = min(current_qty + quantity, max_count)
-            self.db.execute(
-                "UPDATE inventory SET quantity=? WHERE id=?", (new_qty, inv_id)
-            )
-        else:
-            # Проверяем количество слотов у игрока
-            slots = self.db.fetchone(
-                "SELECT COUNT(*) FROM inventory WHERE player_id=?", (player_id,)
-            )[0]
+            new_qty = current_qty + quantity
 
-            max_slots = self.db.fetchone(
-                "SELECT max_inventory_slots FROM players WHERE id=?", (player_id,)
-            )[0]
-
-            if slots < max_slots:
+            if new_qty <= max_count:
+                # просто обновляем количество
                 self.db.execute(
-                    "INSERT INTO inventory (player_id, item_id, quantity) VALUES (?, ?, ?)",
-                    (player_id, item_id, min(quantity, max_count)),
+                    "UPDATE inventory SET quantity=? WHERE id=?", (new_qty, inv_id)
                 )
             else:
-                raise Exception("Инвентарь заполнен!")
+                # заполняем текущий стак до максимума
+                self.db.execute(
+                    "UPDATE inventory SET quantity=? WHERE id=?", (max_count, inv_id)
+                )
+                # остаток идёт в новый стак
+                leftover = new_qty - max_count
+                self.db.execute(
+                    "INSERT INTO inventory (player_id, item_id, quantity) VALUES (?, ?, ?)",
+                    (player_id, item_id, leftover),
+                )
+        else:
+            # если предмета нет вообще — создаём новый стак
+            self.db.execute(
+                "INSERT INTO inventory (player_id, item_id, quantity) VALUES (?, ?, ?)",
+                (player_id, item_id, min(quantity, max_count)),
+            )
+            leftover = quantity - max_count
+            while leftover > 0:
+                qty = min(leftover, max_count)
+                self.db.execute(
+                    "INSERT INTO inventory (player_id, item_id, quantity) VALUES (?, ?, ?)",
+                    (player_id, item_id, qty),
+                )
+                leftover -= qty
 
     def get_inventory(self, player_id: int) -> List[Tuple]:
         return self.db.fetchall(
             "SELECT * FROM inventory WHERE player_id=?", (player_id,)
+        )
+
+    def get_player_items(self, player_id: int) -> List[Tuple]:
+        """
+        Возвращает список предметов игрока с названием, типом, количеством и флагами использования.
+        Формат: (item_id, name, type, quantity, usable_in_fight, usable_in_profile)
+        """
+        return self.db.fetchall(
+            """
+            SELECT items.id, items.name, items.type, inventory.quantity,
+                items.usable_in_fight, items.usable_in_profile
+            FROM inventory
+            JOIN items ON inventory.item_id = items.id
+            WHERE inventory.player_id=?
+            """,
+            (player_id,),
         )
 
 
@@ -401,18 +447,149 @@ class QuestRepo:
 
     def get_quest(self, quest_id: int) -> Optional[Tuple]:
         return self.db.fetchone("SELECT * FROM quests WHERE id=?", (quest_id,))
+# utils/leveling.py
+
+import math
+from utils.db import Database, PlayerRepo
+from config import DB_PATH
+
+db = Database(DB_PATH)
+player_repo = PlayerRepo(db)
+
+
+def exp_required(level: int) -> int:
+    base = 50
+    p = 2
+    scale = 5
+    m = 0.1
+    return int(base * (level**p) + scale * math.exp(m * level))
+
+
+def check_level_up(player_id: int):
+    player = player_repo.get_player(player_id)
+    level = player[3]  # поле level
+    exp = player[9]  # поле exp
+    max_hp = player[5]  # max_hp
+    max_mana = player[8]  # max_mana
+
+    while exp >= exp_required(level):
+        exp -= exp_required(level)
+        level += 1
+        max_hp += 10
+        max_mana += 5
+
+        # апдейт: уровень, опыт, макс HP/MP и восстановление
+        db.execute(
+            "UPDATE players SET level=?, exp=?, max_hp=?, hp=?, max_mana=?, mana=? WHERE id=?",
+            (level, exp, max_hp, max_hp, max_mana, max_mana, player_id),
+        )
+# utils/quest_logic.py
+
+from utils.db import Database, QuestRepo, PlayerRepo, InventoryRepo
+from config import DB_PATH
+
+db = Database(DB_PATH)
+quest_repo = QuestRepo(db)
+player_repo = PlayerRepo(db)
+inventory_repo = InventoryRepo(db)
+
+
+def complete_quest(player_id: int, quest_id: int) -> str:
+    quest = quest_repo.get_quest(quest_id)
+    (
+        _,
+        title,
+        _,
+        reward_exp,
+        reward_gold,
+        reward_item_id,
+        _,
+        _,
+        _,
+    ) = quest
+
+    db.execute(
+        "UPDATE player_quests SET status='completed' WHERE player_id=? AND quest_id=?",
+        (player_id, quest_id),
+    )
+
+    player_repo.update_gold(player_id, reward_gold)
+    db.execute("UPDATE players SET exp = exp + ? WHERE id=?", (reward_exp, player_id))
+    if reward_item_id:
+        inventory_repo.add_item_to_player(player_id, reward_item_id, 1)
+
+    return f"🎉 Квест '{title}' выполнен!\n📈 EXP: {reward_exp}\n💰 Gold: {reward_gold}"
+
+
+def check_quests(player_id: int, event_type: str, target_id: int, amount: int = 1):
+    """
+    event_type: 'kill_mob' | 'collect_item' | 'reach_level'
+    target_id: mob_id / item_id / level
+    amount: прогресс, добавляемый за событие
+    """
+    active = db.fetchall(
+        """
+        SELECT pq.quest_id, pq.progress, q.condition_type, q.condition_target, q.condition_amount
+        FROM player_quests AS pq
+        JOIN quests AS q ON pq.quest_id = q.id
+        WHERE pq.player_id=? AND pq.status='active'
+        """,
+        (player_id,),
+    )
+
+    messages = []
+    for quest_id, progress, cond_type, target, cond_amount in active:
+        if cond_type != event_type:
+            continue
+        if cond_type == "kill_mob":
+            if target == 0 or target == target_id:  # 0 = любой моб
+                progress += amount
+        elif cond_type == "collect_item":
+            if target == target_id:
+                progress += amount
+        elif cond_type == "reach_level":
+            # для reach_level нет накопления: проверяем уровень напрямую
+            if target_id >= target:
+                progress = cond_amount
+
+        # сохраняем прогресс
+        db.execute(
+            "UPDATE player_quests SET progress=? WHERE player_id=? AND quest_id=?",
+            (progress, player_id, quest_id),
+        )
+
+        # завершение
+        if progress >= cond_amount:
+            messages.append(complete_quest(player_id, quest_id))
+
+    return messages
+# handlers/fight.py
+
 import random
 from aiogram import Router, types, F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from utils.quests_logic import check_quests
-
-from utils.db import Database, PlayerRepo, MobRepo
+from states.battleblock import BattleBlock
+from aiogram.fsm.context import FSMContext
+from utils.db import Database, PlayerRepo, MobRepo, InventoryRepo
+from utils.quest_logic import check_quests
 from config import DB_PATH
+from utils.leveling import check_level_up
+
+SPELL_COST = 10
 
 router = Router()
 db = Database(DB_PATH)
 player_repo = PlayerRepo(db)
 mob_repo = MobRepo(db)
+inventory_repo = InventoryRepo(db)
+
+
+def victory_menu():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Назад", callback_data="menu:back")
+    kb.button(text="➡️ Следующий", callback_data="fight:start")
+    kb.adjust(2)
+    return kb.as_markup()
 
 
 def fight_menu():
@@ -420,38 +597,38 @@ def fight_menu():
     kb.button(text="⚔️ Атака", callback_data="fight:attack")
     kb.button(text="🛡️ Защита", callback_data="fight:defend")
     kb.button(text="🔮 Магия", callback_data="fight:magic")
+    kb.button(text="📦 Инвентарь", callback_data="inventory:battle")
     kb.adjust(2)
     return kb.as_markup()
 
 
-async def fight_defeat(callback, player, battle_id, name, mob_dmg, text):
+async def fight_defeat(
+    callback: types.CallbackQuery, player, battle_id, name, mob_dmg, text
+):
     db.execute("UPDATE battles SET status='finished' WHERE id=?", (battle_id,))
-
-    db.execute("UPDATE players SET hp = max_hp WHERE id=?", (player[0],))
-
-    db.execute("UPDATE players SET mana = max_mana WHERE id=?", (player[0],))
-
-    lost_gold = int(player[10] * 0.2)  # player[10] = gold
+    db.execute(
+        "UPDATE players SET hp = max_hp, mana = max_mana, exp = 0 WHERE id=?",
+        (player[0],),
+    )
+    lost_gold = int(player[10] * 0.2)
     db.execute("UPDATE players SET gold = gold - ? WHERE id=?", (lost_gold, player[0]))
-
-    db.execute("UPDATE players SET exp = 0 WHERE id=?", (player[0],))
-
     await callback.message.edit_text(
         text + f"👊 {name} нанёс {mob_dmg}.\n💀 Ты проиграл!\n"
         f"❤️ HP восстановлено до {player[5]}.\n"
         f"💰 Потеряно {lost_gold} золота.\n"
-        f"📈 Опыт обнулён."
+        f"📈 Опыт обнулён.",
+        reply_markup=victory_menu(),
     )
 
 
 @router.callback_query(F.data == "fight:start")
-async def start_fight(callback: types.CallbackQuery):
+async def start_fight(callback: types.CallbackQuery, state: FSMContext):
     player = player_repo.get_player(callback.from_user.id)
     if not player:
         await callback.answer("Сначала зарегистрируйся!", show_alert=True)
         return
 
-    # Завершаем старый бой, если он ещё активен
+    # Завершаем старые активные бои
     db.execute(
         "UPDATE battles SET status='finished' WHERE player_id=? AND status='active'",
         (player[0],),
@@ -463,28 +640,25 @@ async def start_fight(callback: types.CallbackQuery):
         return
 
     mob = random.choice(mobs)
-    mob_id = mob[0]  # id моба
-    name = mob[1]  # имя
-    hp = mob[2]  # здоровье
-    attack = mob[3]  # сила атаки
-    exp_reward = mob[4]  # опыт
-    gold_reward = mob[5]  # золото
-    drop_item_id = mob[6]  # предмет
+    mob_id, name, hp, attack, exp_reward, gold_reward, drop_item_id = mob
 
-    # создаём новую запись боя
     db.execute(
         "INSERT INTO battles (player_id, mob_id, mob_hp, player_hp, status) VALUES (?, ?, ?, ?, 'active')",
         (player[0], mob_id, hp, player[4]),
     )
-
+    await state.set_state(BattleBlock.active)
+    mana, max_mana = player[7], player[8]
     await callback.message.edit_text(
-        f"⚔️ Ты встретил {name}!\n❤️ HP моба: {hp}\nВыбери действие:",
+        f"⚔️ Ты встретил {name}!\n"
+        f"❤️ HP моба: {hp}\n"
+        f"🔮 Твоя мана: {mana}/{max_mana}\n"
+        f"Выбери действие:",
         reply_markup=fight_menu(),
     )
 
 
 @router.callback_query(F.data == "fight:attack")
-async def player_attack(callback: types.CallbackQuery):
+async def player_attack(callback: types.CallbackQuery, state: FSMContext):
     player = player_repo.get_player(callback.from_user.id)
     battle = db.fetchone(
         "SELECT id, mob_id, mob_hp, player_hp FROM battles WHERE player_id=? AND status='active'",
@@ -496,28 +670,113 @@ async def player_attack(callback: types.CallbackQuery):
 
     battle_id, mob_id, mob_hp, player_hp = battle
     mob = mob_repo.get_mob(mob_id)
-    name = mob[1]
-    attack = mob[3]
-    exp_reward = mob[4]
-    gold_reward = mob[5]
+    _, name, _, attack, exp_reward, gold_reward, drop_item_id = mob
 
-    # Игрок наносит урон
     dmg = random.randint(5, 15)
     mob_hp = max(mob_hp - dmg, 0)
-
     text = f"⚔️ Ты ударил {name} на {dmg}!\n"
 
     if mob_hp <= 0:
-        # Победа
         player_repo.update_gold(player[0], gold_reward)
         db.execute("UPDATE battles SET status='finished' WHERE id=?", (battle_id,))
         db.execute(
             "UPDATE players SET exp = exp + ? WHERE id=?", (exp_reward, player[0])
         )
-
+        check_level_up(player[0])
+        await state.clear()
         drop_text = ""
         if drop_item_id:
-            # Добавляем предмет игроку
+            inventory_repo.add_item_to_player(player[0], drop_item_id, 1)
+            item = db.fetchone("SELECT name FROM items WHERE id=?", (drop_item_id,))
+            drop_text = (
+                f"\n🎁 Выпал предмет: {item[0]}" if item else "\n🎁 Выпал предмет!"
+            )
+
+        # Обновляем мана из базы (не менялась, но берём актуальные значения)
+        mana, max_mana = player[7], player[8]
+        await callback.message.edit_text(
+            text + f"🎉 Победа над {name}!\n"
+            f"📈 EXP: {exp_reward}\n"
+            f"💰 Gold: {gold_reward}\n"
+            f"🔮 Твоя мана: {mana}/{max_mana}"
+            f"{drop_text}",
+            reply_markup=victory_menu(),
+        )
+
+        messages = check_quests(player[0], "kill_mob", mob_id, 1)
+        for msg in messages:
+            await callback.message.answer(msg)
+        return
+
+    # Ответ моба
+    mob_dmg = random.randint(1, attack)
+    player_hp = max(player_hp - mob_dmg, 0)
+    player_repo.update_hp(player[0], player_hp)
+
+    mana, max_mana = player[7], player[8]
+    if player_hp <= 0:
+        await fight_defeat(callback, player, battle_id, name, mob_dmg, text)
+        await state.clear()
+    else:
+        db.execute(
+            "UPDATE battles SET mob_hp=?, player_hp=? WHERE id=?",
+            (mob_hp, player_hp, battle_id),
+        )
+        await callback.message.edit_text(
+            text + f"👊 {name} ответил и нанёс {mob_dmg}.\n"
+            f"❤️ Твоё HP: {player_hp}/{player[5]}\n"
+            f"💀 HP моба: {mob_hp}\n"
+            f"🔮 Твоя мана: {mana}/{max_mana}\n"
+            f"Выбери действие:",
+            reply_markup=fight_menu(),
+        )
+
+
+@router.callback_query(F.data == "fight:magic")
+async def player_magic(callback: types.CallbackQuery, state: FSMContext):
+    player = player_repo.get_player(callback.from_user.id)
+    if not player:
+        await callback.answer("Сначала зарегистрируйся!", show_alert=True)
+        return
+
+    battle = db.fetchone(
+        "SELECT id, mob_id, mob_hp, player_hp FROM battles WHERE player_id=? AND status='active'",
+        (player[0],),
+    )
+    if not battle:
+        await callback.answer("Бой не найден!", show_alert=True)
+        return
+
+    battle_id, mob_id, mob_hp, player_hp = battle
+    mob = mob_repo.get_mob(mob_id)
+    _, name, _, attack, exp_reward, gold_reward, drop_item_id = mob
+
+    mana, max_mana = player[7], player[8]
+    if mana < SPELL_COST:
+        await callback.answer(
+            f"Недостаточно маны (нужно {SPELL_COST})!", show_alert=True
+        )
+        return
+
+    dmg = random.randint(15, 30)
+    mob_hp = max(mob_hp - dmg, 0)
+
+    # Списываем ману и показываем актуальные значения
+    mana = max(mana - SPELL_COST, 0)
+    db.execute("UPDATE players SET mana=? WHERE id=?", (mana, player[0]))
+
+    text = f"🔮 Ты используешь магию и наносишь {dmg} урона {name}!\n"
+
+    if mob_hp <= 0:
+        player_repo.update_gold(player[0], gold_reward)
+        db.execute("UPDATE battles SET status='finished' WHERE id=?", (battle_id,))
+        db.execute(
+            "UPDATE players SET exp = exp + ? WHERE id=?", (exp_reward, player[0])
+        )
+        check_level_up(player[0])
+        await state.clear()
+        drop_text = ""
+        if drop_item_id:
             inventory_repo.add_item_to_player(player[0], drop_item_id, 1)
             item = db.fetchone("SELECT name FROM items WHERE id=?", (drop_item_id,))
             drop_text = (
@@ -527,23 +786,24 @@ async def player_attack(callback: types.CallbackQuery):
         await callback.message.edit_text(
             text + f"🎉 Победа над {name}!\n"
             f"📈 EXP: {exp_reward}\n"
-            f"💰 Gold: {gold_reward}"
-            f"{drop_text}"
+            f"💰 Gold: {gold_reward}\n"
+            f"🔮 Твоя мана: {mana}/{max_mana}"
+            f"{drop_text}",
+            reply_markup=victory_menu(),
         )
 
-        # Проверка квестов (например kill_mob)
         messages = check_quests(player[0], "kill_mob", mob_id, 1)
         for msg in messages:
             await callback.message.answer(msg)
+        return
 
-    return
-    # Моб отвечает
     mob_dmg = random.randint(1, attack)
     player_hp = max(player_hp - mob_dmg, 0)
     player_repo.update_hp(player[0], player_hp)
 
     if player_hp <= 0:
         await fight_defeat(callback, player, battle_id, name, mob_dmg, text)
+        await state.clear()
     else:
         db.execute(
             "UPDATE battles SET mob_hp=?, player_hp=? WHERE id=?",
@@ -553,13 +813,14 @@ async def player_attack(callback: types.CallbackQuery):
             text + f"👊 {name} ответил и нанёс {mob_dmg}.\n"
             f"❤️ Твоё HP: {player_hp}/{player[5]}\n"
             f"💀 HP моба: {mob_hp}\n"
+            f"🔮 Твоя мана: {mana}/{max_mana}\n"
             f"Выбери действие:",
             reply_markup=fight_menu(),
         )
 
 
 @router.callback_query(F.data == "fight:defend")
-async def player_defend(callback: types.CallbackQuery):
+async def player_defend(callback: types.CallbackQuery, state: FSMContext):
     player = player_repo.get_player(callback.from_user.id)
     battle = db.fetchone(
         "SELECT id, mob_id, mob_hp, player_hp FROM battles WHERE player_id=? AND status='active'",
@@ -571,16 +832,12 @@ async def player_defend(callback: types.CallbackQuery):
 
     battle_id, mob_id, mob_hp, player_hp = battle
     mob = mob_repo.get_mob(mob_id)
-    name = mob[1]
-    attack = mob[3]
-    exp_reward = mob[4]
-    gold_reward = mob[5]
+    _, name, _, attack, exp_reward, gold_reward, drop_item_id = mob
 
-    # Игрок наносит небольшой урон при защите
+    # Защита: малый урон игрока, уменьшенный ответ моба
     dmg = random.randint(3, 8)
     mob_hp = max(mob_hp - dmg, 0)
 
-    # Моб наносит уменьшенный урон
     mob_dmg = max(random.randint(1, attack) // 2, 0)
     player_hp = max(player_hp - mob_dmg, 0)
     player_repo.update_hp(player[0], player_hp)
@@ -590,16 +847,39 @@ async def player_defend(callback: types.CallbackQuery):
     if mob_hp <= 0:
         player_repo.update_gold(player[0], gold_reward)
         db.execute("UPDATE battles SET status='finished' WHERE id=?", (battle_id,))
+        db.execute(
+            "UPDATE players SET exp = exp + ? WHERE id=?", (exp_reward, player[0])
+        )
+        check_level_up(player[0])
+
+        await state.clear()
+        drop_text = ""
+        if drop_item_id:
+            inventory_repo.add_item_to_player(player[0], drop_item_id, 1)
+            item = db.fetchone("SELECT name FROM items WHERE id=?", (drop_item_id,))
+            drop_text = (
+                f"\n🎁 Выпал предмет: {item[0]}" if item else "\n🎁 Выпал предмет!"
+            )
+
+        mana, max_mana = player[7], player[8]
         await callback.message.edit_text(
             text + f"🎉 Победа над {name}!\n"
             f"📈 EXP: {exp_reward}\n"
-            f"💰 Gold: {gold_reward}"
+            f"💰 Gold: {gold_reward}\n"
+            f"🔮 Твоя мана: {mana}/{max_mana}"
+            f"{drop_text}",
+            reply_markup=victory_menu(),
         )
+
+        messages = check_quests(player[0], "kill_mob", mob_id, 1)
+        for msg in messages:
+            await callback.message.answer(msg)
         return
 
+    mana, max_mana = player[7], player[8]
     if player_hp <= 0:
         await fight_defeat(callback, player, battle_id, name, mob_dmg, text)
-
+        await state.clear()
     else:
         db.execute(
             "UPDATE battles SET mob_hp=?, player_hp=? WHERE id=?",
@@ -609,90 +889,371 @@ async def player_defend(callback: types.CallbackQuery):
             text + f"👊 {name} атакует, но твоя защита снижает урон!\n"
             f"❤️ Твоё HP: {player_hp}/{player[5]}\n"
             f"💀 HP моба: {mob_hp}\n"
+            f"🔮 Твоя мана: {mana}/{max_mana}\n"
             f"Выбери действие:",
             reply_markup=fight_menu(),
         )
 
 
-@router.callback_query(F.data == "fight:magic")
-async def player_magic(callback: types.CallbackQuery):
+@router.callback_query(F.data == "fight:menu")
+async def fight_menu_back(callback: types.CallbackQuery):
     player = player_repo.get_player(callback.from_user.id)
-    if not player:
-        await callback.answer("Сначала зарегистрируйся!", show_alert=True)
-        return
-
-    # Ищем активный бой
     battle = db.fetchone(
-        "SELECT id, mob_id, mob_hp, player_hp FROM battles WHERE player_id=? AND status='active'",
+        "SELECT mob_id, mob_hp, player_hp FROM battles WHERE player_id=? AND status='active'",
         (player[0],),
     )
     if not battle:
         await callback.answer("Бой не найден!", show_alert=True)
         return
 
-    battle_id, mob_id, mob_hp, player_hp = battle
-
-    # Получаем моба из БД
+    mob_id, mob_hp, player_hp = battle
     mob = mob_repo.get_mob(mob_id)
-    if not mob:
-        await callback.answer("Моб не найден!", show_alert=True)
+    _, name, _, attack, _, _, _ = mob
+
+    mana, max_mana = player[7], player[8]
+    await callback.message.edit_text(
+        f"⚔️ Ты продолжаешь бой с {name}!\n"
+        f"❤️ Твоё HP: {player_hp}/{player[5]}\n"
+        f"💀 HP моба: {mob_hp}\n"
+        f"🔮 Твоя мана: {mana}/{max_mana}\n"
+        f"Выбери действие:",
+        reply_markup=fight_menu(),
+    )
+from aiogram import Router, types, F
+from aiogram.fsm.context import FSMContext
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+import random
+from utils.db import Database, ItemRepo, InventoryRepo, PlayerRepo
+from config import DB_PATH
+from utils.leveling import check_level_up
+
+router = Router()
+db = Database(DB_PATH)
+item_repo = ItemRepo(db)
+inventory_repo = InventoryRepo(db)
+player_repo = PlayerRepo(db)
+
+
+def fight_menu_inline():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⚔️ Атака", callback_data="fight:attack")
+    kb.button(text="🛡️ Защита", callback_data="fight:defend")
+    kb.button(text="🔮 Магия", callback_data="fight:magic")
+    kb.button(text="📦 Инвентарь", callback_data="inventory:battle")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+def victory_menu_inline():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Назад", callback_data="menu:back")
+    kb.button(text="➡️ Следующий", callback_data="fight:start")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+# ---------- Профильный инвентарь ----------
+@router.callback_query(F.data == "inventory:profile")
+async def inventory_profile(callback: types.CallbackQuery):
+    player = player_repo.get_player(callback.from_user.id)
+    items = inventory_repo.get_player_items(player[0])
+
+    if not items:
+        # если инвентарь пуст — показываем кнопку назад
+        kb = InlineKeyboardBuilder()
+        kb.button(text="⬅️ Назад", callback_data="profile:show")
+        await callback.message.edit_text(
+            "📦 Инвентарь пуст!", reply_markup=kb.as_markup()
+        )
         return
 
-    name = mob[1]
-    attack = mob[3]
-    exp_reward = mob[4]
-    gold_reward = mob[5]
+    kb = InlineKeyboardBuilder()
+    text = "📦 Твой инвентарь:\n"
+    for item_id, name, type_, qty, usable_in_fight, usable_in_profile in items:
+        text += f"\n{name} x{qty}"
+        if usable_in_profile:
+            kb.button(
+                text=f"Использовать {name}",
+                callback_data=f"inventory:use:{item_id}:profile",
+            )
+        kb.button(text=f"Продать {name}", callback_data=f"inventory:sell:{item_id}")
+    kb.button(text="⬅️ Назад", callback_data="profile:show")
+    kb.adjust(2)
+    await callback.message.edit_text(text, reply_markup=kb.as_markup())
 
-    # Проверяем ману (player[6] = mana, player[7] = max_mana)
-    if player[6] < 10:
-        await callback.answer("Недостаточно маны (нужно 10)!", show_alert=True)
+
+# ---------- Боевой инвентарь ----------
+@router.callback_query(F.data == "inventory:battle")
+async def inventory_battle(callback: types.CallbackQuery):
+    player = player_repo.get_player(callback.from_user.id)
+    items = inventory_repo.get_player_items(player[0])
+
+    if not items:
+        # если инвентарь пуст — показываем кнопку назад в бой
+        kb = InlineKeyboardBuilder()
+        kb.button(text="⬅️ Назад", callback_data="fight:menu")
+        await callback.message.edit_text(
+            "📦 Инвентарь пуст!", reply_markup=kb.as_markup()
+        )
         return
 
-    # Магия: высокий урон, расход маны
-    dmg = random.randint(15, 30)
-    mob_hp = max(mob_hp - dmg, 0)
+    kb = InlineKeyboardBuilder()
+    text = "⚔️ Боевой инвентарь:\n"
+    for item_id, name, type_, qty, usable_in_fight, usable_in_profile in items:
+        text += f"\n{name} x{qty}"
+        if usable_in_fight:
+            kb.button(
+                text=f"Использовать {name}",
+                callback_data=f"inventory:use:{item_id}:battle",
+            )
+    kb.button(text="⬅️ Назад", callback_data="fight:menu")
+    kb.adjust(1)
+    await callback.message.edit_text(text, reply_markup=kb.as_markup())
 
-    # Списываем 10 маны
-    new_mana = max(player[6] - 10, 0)
-    db.execute("UPDATE players SET mana=? WHERE id=?", (new_mana, player[0]))
 
-    text = f"🔮 Ты используешь магию и наносишь {dmg} урона {name}!\n"
+# ---------- Использование предметов ----------
+@router.callback_query(F.data.startswith("inventory:use:"))
+async def inventory_use(callback: types.CallbackQuery, state: FSMContext):
+    _, _, item_id, mode = callback.data.split(":")
+    item_id = int(item_id)
+    player = player_repo.get_player(callback.from_user.id)
+    item = item_repo.get_item(item_id)
 
-    # Если моб погиб — победа
+    if not item or not player:
+        await callback.answer("Ошибка!", show_alert=True)
+        return
+
+    (
+        _,
+        name,
+        type_,
+        power,
+        max_count,
+        price_gold,
+        price_diamonds,
+        usable_in_fight,
+        usable_in_profile,
+    ) = item
+
+    # Доступность по режиму
+    if mode == "profile" and not usable_in_profile:
+        await callback.answer(
+            "Этот предмет нельзя использовать в профиле!", show_alert=True
+        )
+        return
+    if mode == "battle" and not usable_in_fight:
+        await callback.answer(
+            "Этот предмет нельзя использовать в бою!", show_alert=True
+        )
+        return
+
+    msg = ""
+    # Применяем эффект предмета
+    if type_ == "potion_hp":
+        # heal
+        new_hp = min(player[4] + power, player[5])
+        db.execute("UPDATE players SET hp=? WHERE id=?", (new_hp, player[0]))
+        msg = f"🧪 Ты использовал {name}! HP восстановлено до {new_hp}/{player[5]}"
+        if mode == "battle":
+            # синхронизируем HP в активной битве
+            db.execute(
+                "UPDATE battles SET player_hp=? WHERE player_id=? AND status='active'",
+                (new_hp, player[0]),
+            )
+    elif type_ == "potion_mana":
+        new_mana = min(player[7] + power, player[8])
+        db.execute("UPDATE players SET mana=? WHERE id=?", (new_mana, player[0]))
+        msg = f"🧪 Ты использовал {name}! Мана восстановлена до {new_mana}/{player[8]}"
+    elif type_ == "bomb" and mode == "battle":
+        battle = db.fetchone(
+            "SELECT id, mob_id, mob_hp, player_hp FROM battles WHERE player_id=? AND status='active'",
+            (player[0],),
+        )
+        if not battle:
+            await callback.answer("Нет активного боя!", show_alert=True)
+            return
+        battle_id, mob_id, mob_hp, player_hp = battle
+        mob_hp = max(mob_hp - power, 0)
+        db.execute("UPDATE battles SET mob_hp=? WHERE id=?", (mob_hp, battle_id))
+        msg = f"💣 Ты использовал {name}! Моб получил {power} урона.\n💀 HP моба: {mob_hp}"
+    else:
+        await callback.answer(
+            "Этот предмет не имеет боевого/профильного эффекта!", show_alert=True
+        )
+        return
+
+    # уменьшить количество предмета
+    db.execute(
+        "UPDATE inventory SET quantity = quantity - 1 WHERE player_id=? AND item_id=?",
+        (player[0], item_id),
+    )
+    db.execute(
+        "DELETE FROM inventory WHERE player_id=? AND item_id=? AND quantity<=0",
+        (player[0], item_id),
+    )
+
+    # Профиль: просто показываем результат + назад
+    if mode == "profile":
+        await callback.message.edit_text(
+            msg,
+            reply_markup=types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        types.InlineKeyboardButton(
+                            text="⬅️ Назад", callback_data="inventory:profile"
+                        )
+                    ]
+                ]
+            ),
+        )
+        return
+
+    # Бой: это ход — моб должен ответить
+    battle = db.fetchone(
+        "SELECT id, mob_id, mob_hp, player_hp FROM battles WHERE player_id=? AND status='active'",
+        (player[0],),
+    )
+    if not battle:
+        # если боя нет, просто покажем сообщение
+        await callback.message.edit_text(
+            msg,
+            reply_markup=types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        types.InlineKeyboardButton(
+                            text="⬅️ Назад", callback_data="menu:back"
+                        )
+                    ]
+                ]
+            ),
+        )
+        return
+
+    battle_id, mob_id, mob_hp, player_hp = battle
+    mob = db.fetchone(
+        "SELECT id, name, hp, attack, exp_reward, gold_reward, drop_item_id FROM mobs WHERE id=?",
+        (mob_id,),
+    )
+    _, mob_name, _, mob_attack, exp_reward, gold_reward, drop_item_id = mob
+
+    # Если моб умер от бомбы — победа без ответа
     if mob_hp <= 0:
+        # награда, завершение боя
         player_repo.update_gold(player[0], gold_reward)
         db.execute("UPDATE battles SET status='finished' WHERE id=?", (battle_id,))
+        db.execute(
+            "UPDATE players SET exp = exp + ? WHERE id=?", (exp_reward, player[0])
+        )
+        check_level_up(player[0])
+        await state.clear()
+        drop_text = ""
+        if drop_item_id:
+            inventory_repo.add_item_to_player(player[0], drop_item_id, 1)
+            item_row = db.fetchone("SELECT name FROM items WHERE id=?", (drop_item_id,))
+            drop_text = (
+                f"\n🎁 Выпал предмет: {item_row[0]}"
+                if item_row
+                else "\n🎁 Выпал предмет!"
+            )
+
+        # показываем победу
+        current_mana = player_repo.get_player(player[0])[7]
+        max_mana = player_repo.get_player(player[0])[8]
         await callback.message.edit_text(
-            text + f"🎉 Победа над {name}!\n"
-            f"📈 EXP: {exp_reward}\n"
-            f"💰 Gold: {gold_reward}\n"
-            f"🔮 Твоя мана: {new_mana}/{player[7]}"
+            msg
+            + f"\n🎉 Победа над {mob_name}!\n📈 EXP: {exp_reward}\n💰 Gold: {gold_reward}\n🔮 Твоя мана: {current_mana}/{max_mana}{drop_text}",
+            reply_markup=victory_menu_inline(),
         )
         return
 
-    # Иначе моб отвечает
-    mob_dmg = random.randint(1, attack)
-    player_hp = max(player_hp - mob_dmg, 0)
-    player_repo.update_hp(player[0], player_hp)
+    # Ответ моба
+    mob_dmg = random.randint(1, mob_attack)
+    # текущее HP игрока после зелья могло измениться; берём актуальное из battles
+    battle = db.fetchone("SELECT player_hp FROM battles WHERE id=?", (battle_id,))
+    current_player_hp = battle[0] if battle else player_hp
+    current_player_hp = max(current_player_hp - mob_dmg, 0)
 
-    if player_hp <= 0:
-        await fight_defeat(callback, player, battle_id, name, mob_dmg, text)
-    else:
-        # Обновляем состояние боя и показываем меню
+    # обновляем HP игрока в players и battles
+    player_repo.update_hp(player[0], current_player_hp)
+    db.execute(
+        "UPDATE battles SET player_hp=? WHERE id=?", (current_player_hp, battle_id)
+    )
+
+    # Поражение
+    if current_player_hp <= 0:
+        db.execute("UPDATE battles SET status='finished' WHERE id=?", (battle_id,))
+        # восстановление после поражения, штрафы
         db.execute(
-            "UPDATE battles SET mob_hp=?, player_hp=? WHERE id=?",
-            (mob_hp, player_hp, battle_id),
+            "UPDATE players SET hp = max_hp, mana = max_mana, exp = 0 WHERE id=?",
+            (player[0],),
         )
+        lost_gold = int(player[10] * 0.2)
+        db.execute(
+            "UPDATE players SET gold = gold - ? WHERE id=?", (lost_gold, player[0])
+        )
+
+        await state.clear()
         await callback.message.edit_text(
-            text + f"👊 {name} ответил и нанёс {mob_dmg}.\n"
-            f"❤️ Твоё HP: {player_hp}/{player[5]}\n"
-            f"💀 HP моба: {mob_hp}\n"
-            f"🔮 Твоя мана: {new_mana}/{player[7]}\n"
-            f"Выбери действие:",
-            reply_markup=fight_menu(),
+            msg
+            + f"\n👊 {mob_name} нанёс {mob_dmg}.\n💀 Ты проиграл!\n❤️ HP восстановлено до {player[5]}.\n💰 Потеряно {lost_gold} золота.\n📈 Опыт обнулён.",
+            reply_markup=victory_menu_inline(),
         )
+        return
+
+    # Продолжение боя: показать текущее состояние
+    # актуальные мана/макс мана
+    refreshed = player_repo.get_player(player[0])
+    mana, max_mana = refreshed[7], refreshed[8]
+
+    await callback.message.edit_text(
+        msg + f"\n👊 {mob_name} ответил и нанёс {mob_dmg}.\n"
+        f"❤️ Твоё HP: {current_player_hp}/{refreshed[5]}\n"
+        f"💀 HP моба: {mob_hp}\n"
+        f"🔮 Твоя мана: {mana}/{max_mana}\n"
+        f"Выбери действие:",
+        reply_markup=fight_menu_inline(),
+    )
+
+
+# ---------- Продажа предметов (только профиль) ----------
+@router.callback_query(F.data.startswith("inventory:sell:"))
+async def inventory_sell(callback: types.CallbackQuery):
+    item_id = int(callback.data.split(":")[2])
+    player = player_repo.get_player(callback.from_user.id)
+    item = item_repo.get_item(item_id)
+
+    if not item or not player:
+        await callback.answer("Ошибка!", show_alert=True)
+        return
+
+    (
+        _,
+        name,
+        type_,
+        power,
+        max_count,
+        price_gold,
+        price_diamonds,
+        usable_in_fight,
+        usable_in_profile,
+    ) = item
+    sell_price = max(price_gold // 2, 1)
+
+    player_repo.update_gold(player[0], sell_price)
+    db.execute(
+        "UPDATE inventory SET quantity = quantity - 1 WHERE player_id=? AND item_id=?",
+        (player[0], item_id),
+    )
+    db.execute(
+        "DELETE FROM inventory WHERE player_id=? AND item_id=? AND quantity<=0",
+        (player[0], item_id),
+    )
+
+    await callback.message.answer(f"💰 Ты продал {name} за {sell_price} золота!")
+
 from aiogram import Router, types, F
 
+from utils.leveling import exp_required
 from utils.db import Database, PlayerRepo
 from config import DB_PATH
 
@@ -723,19 +1284,26 @@ async def show_profile(callback: types.CallbackQuery):
 
         kb = types.InlineKeyboardMarkup(
             inline_keyboard=[
-                [types.InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")]
+                [
+                    types.InlineKeyboardButton(
+                        text="📦 Инвентарь", callback_data="inventory:profile"
+                    )
+                ],
+                [types.InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")],
             ]
         )
 
+        exp_to_next = exp_required(lvl)
         await callback.message.edit_text(
-            f"👤 {name}\n⚔️ Класс: {cls}\n⭐ Уровень: {lvl}\n❤️ HP: {hp}/{max_hp}\n🔮 Mana: {mana}/{max_mana}\n📈 EXP: {exp}\n💰 Gold: {gold}\n💎 Diamonds: {diamonds}",
+            f"👤 {name}\n⚔️ Класс: {cls}\n⭐ Уровень: {lvl}\n❤️ HP: {hp}/{max_hp}\n🔮 Mana: {mana}/{max_mana}\n📈 EXP: {exp}/{exp_to_next}\n💰 Gold: {gold}\n💎 Diamonds: {diamonds}",
             reply_markup=kb,
         )
     else:
         await callback.answer("Ты ещё не зарегистрирован!", show_alert=True)
+# handlers/quests.py
+
 from aiogram import Router, types, F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-
 from utils.db import Database, QuestRepo, PlayerRepo, InventoryRepo
 from config import DB_PATH
 
@@ -766,8 +1334,10 @@ async def quests_menu(callback: types.CallbackQuery):
         condition_target,
         condition_amount,
     ) in quests:
-        text += f"\n{title} — {description}"
+        cond = f"{condition_type}:{condition_target} x{condition_amount}"
+        text += f"\n{title} — {description} (условие: {cond})"
         kb.button(text=f"Взять {title}", callback_data=f"quest:start:{quest_id}")
+    kb.button(text="⬅️ Назад", callback_data="menu:back")
     kb.adjust(1)
 
     await callback.message.edit_text(text, reply_markup=kb.as_markup())
@@ -775,20 +1345,20 @@ async def quests_menu(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("quest:start:"))
 async def quest_start(callback: types.CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Назад", callback_data="menu:back")
+    kb.adjust(1)
     quest_id = int(callback.data.split(":")[2])
     quest = quest_repo.get_quest(quest_id)
     player = player_repo.get_player(callback.from_user.id)
-
     if not quest:
         await callback.answer("Квест не найден!", show_alert=True)
         return
 
-    # Проверяем, есть ли запись в player_quests
     existing = db.fetchone(
         "SELECT status FROM player_quests WHERE player_id=? AND quest_id=?",
         (player[0], quest_id),
     )
-
     if existing:
         if existing[0] == "completed":
             await callback.answer("Ты уже выполнил этот квест!", show_alert=True)
@@ -797,9 +1367,8 @@ async def quest_start(callback: types.CallbackQuery):
             await callback.answer("Квест уже активен!", show_alert=True)
             return
 
-    # Создаём запись о квесте
     db.execute(
-        "INSERT INTO player_quests (player_id, quest_id, status) VALUES (?, ?, 'active')",
+        "INSERT INTO player_quests (player_id, quest_id, status, progress) VALUES (?, ?, 'active', 0)",
         (player[0], quest_id),
     )
 
@@ -818,55 +1387,11 @@ async def quest_start(callback: types.CallbackQuery):
     await callback.message.edit_text(
         f"🎯 Квест '{title}' взят!\n"
         f"Описание: {description}\n"
-        f"Награда: {reward_exp} EXP, {reward_gold}💰, "
-        f"{reward_item_id if reward_item_id else '—'}"
+        f"Условие: {condition_type} → {condition_target} ×{condition_amount}\n"
+        f"Награда: {reward_exp} EXP, {reward_gold}💰, {reward_item_id if reward_item_id else '—'}"
     )
-
-
-@router.callback_query(F.data.startswith("quest:complete:"))
-async def quest_complete(callback: types.CallbackQuery):
-    quest_id = int(callback.data.split(":")[2])
-    quest = quest_repo.get_quest(quest_id)
-    player = player_repo.get_player(callback.from_user.id)
-
-    if not quest:
-        await callback.answer("Квест не найден!", show_alert=True)
-        return
-
-    # Проверяем статус
-    existing = db.fetchone(
-        "SELECT status FROM player_quests WHERE player_id=? AND quest_id=?",
-        (player[0], quest_id),
-    )
-
-    if not existing or existing[0] != "active":
-        await callback.answer("Квест не активен!", show_alert=True)
-        return
-
-    # Меняем статус на completed
-    db.execute(
-        "UPDATE player_quests SET status='completed' WHERE player_id=? AND quest_id=?",
-        (player[0], quest_id),
-    )
-
-    _, title, description, reward_exp, reward_gold, reward_item_id = quest
-
-    # Выдаём награду
-    player_repo.update_gold(player[0], reward_gold)
-    db.execute("UPDATE players SET exp = exp + ? WHERE id=?", (reward_exp, player[0]))
-    if reward_item_id:
-        inventory_repo.add_item_to_player(player[0], reward_item_id, 1)
-
-    await callback.message.edit_text(
-        f"🎉 Квест '{title}' выполнен!\n"
-        f"📈 EXP: {reward_exp}\n"
-        f"💰 Gold: {reward_gold}\n"
-        f"🎁 Предмет: {reward_item_id if reward_item_id else '—'}"
-    )
-
 from aiogram import Router, types, F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.filters import Command
 
 from utils.db import Database, ItemRepo, InventoryRepo, PlayerRepo
 from config import DB_PATH, PAYMASTER_PROVIDER_TOKEN
@@ -885,7 +1410,19 @@ async def shop_menu(callback: types.CallbackQuery):
     text = "🛒 Магазин:\n"
 
     if items:
-        for item_id, name, type_, power, max_count, price_gold, price_diamonds in items:
+        for item in items:
+            (
+                item_id,
+                name,
+                type_,
+                power,
+                max_count,
+                price_gold,
+                price_diamonds,
+                usable_in_fight,
+                usable_in_profile,
+            ) = item
+
             text += f"\n{name} ({type_}) — {price_gold}💰 / {price_diamonds}💎"
             kb.button(text=f"Купить {name}", callback_data=f"shop:buy:{item_id}")
 
@@ -902,23 +1439,48 @@ async def shop_buy(callback: types.CallbackQuery):
     item_id = int(callback.data.split(":")[2])
     player = player_repo.get_player(callback.from_user.id)
     item = item_repo.get_item(item_id)
-
-    if not item:
-        await callback.answer("Такого предмета нет!", show_alert=True)
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Назад", callback_data="shop:menu")
+    kb.adjust(1)
+    if not item or not player:
+        await callback.answer("Ошибка!", show_alert=True)
         return
 
-    _, name, type_, power, max_count, price_gold, price_diamonds = item
+    (
+        _,
+        name,
+        type_,
+        power,
+        max_count,
+        price_gold,
+        price_diamonds,
+        usable_in_fight,
+        usable_in_profile,
+    ) = item
 
-    if player[10] < price_gold:  # gold
+    # проверка золота
+    if price_gold > 0 and player[10] < price_gold:
         await callback.answer("Недостаточно золота!", show_alert=True)
         return
 
-    # списываем золото
-    player_repo.update_gold(player[0], -price_gold)
+    # проверка алмазов
+    if price_diamonds > 0 and player[11] < price_diamonds:
+        await callback.answer("Недостаточно алмазов!", show_alert=True)
+        return
+
+    # списываем валюту
+    if price_gold > 0:
+        player_repo.update_gold(player[0], -price_gold)
+    if price_diamonds > 0:
+        player_repo.update_diamonds(player[0], -price_diamonds)
+
     # добавляем предмет
     inventory_repo.add_item_to_player(player[0], item_id, 1)
 
-    await callback.message.edit_text(f"✅ Ты купил {name} за {price_gold}💰!")
+    await callback.message.edit_text(
+        f"✅ Ты купил {name} за {price_gold}💰 {price_diamonds}💎!",
+        reply_markup=kb.as_markup(),
+    )
 
 
 # ==========================
@@ -932,16 +1494,15 @@ async def shop_donate(callback: types.CallbackQuery):
     await callback.message.answer_invoice(
         title="💎 Алмазы",
         description="Пакет 100 алмазов",
-        payload=f"diamonds:{callback.from_user.id}:100",  # payload для идентификации
+        payload=f"diamonds:{callback.from_user.id}:100",
         provider_token=PAYMASTER_PROVIDER_TOKEN,
         currency="USD",
-        prices=[types.LabeledPrice(label="100 алмазов", amount=500)],  # 500 = $5.00
+        prices=[types.LabeledPrice(label="100 алмазов", amount=500)],  # $5.00
     )
 
 
 @router.pre_checkout_query()
 async def process_pre_checkout(pre_checkout_query: types.PreCheckoutQuery):
-    # подтверждаем оплату
     await pre_checkout_query.answer(ok=True)
 
 
@@ -1017,6 +1578,42 @@ async def choose_class(callback: types.CallbackQuery):
         reply_markup=types.InlineKeyboardMarkup(
             inline_keyboard=[
                 [types.InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")]
+            ]
+        ),
+    )
+# states/battleblock.py
+from aiogram.fsm.state import State, StatesGroup
+from aiogram import Router, types, F
+
+
+class BattleBlock(StatesGroup):
+    active = State()
+
+
+router = Router()
+
+
+# Этот хэндлер срабатывает на любой callback_query,
+# если состояние BattleBlock.active активно
+@router.callback_query(
+    BattleBlock.active,
+    ~(
+        F.data.startswith("fight:")
+        | F.data.startswith("inventory:battle")
+        | F.data.startswith("inventory:use:")
+    ),
+)
+async def block_other_callbacks(callback: types.CallbackQuery):
+    await callback.answer("❌ Не сбежишь!", show_alert=True)
+
+
+@router.message(BattleBlock.active)
+async def block_other_callbacks(message: types.Message):
+    await message.answer(
+        "❌ Не сбежишь!",
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [types.InlineKeyboardButton(text="Назад", callback_data="fight:menu")]
             ]
         ),
     )

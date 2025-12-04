@@ -1,5 +1,3 @@
-# handlers/quests.py
-
 from aiogram import Router, types, F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from utils.db import Database, QuestRepo, PlayerRepo, InventoryRepo
@@ -35,6 +33,7 @@ async def quests_menu(callback: types.CallbackQuery):
         cond = f"{condition_type}:{condition_target} x{condition_amount}"
         text += f"\n{title} — {description} (условие: {cond})"
         kb.button(text=f"Взять {title}", callback_data=f"quest:start:{quest_id}")
+    kb.button(text="⬅️ Назад", callback_data="menu:back")
     kb.adjust(1)
 
     await callback.message.edit_text(text, reply_markup=kb.as_markup())
@@ -42,6 +41,9 @@ async def quests_menu(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("quest:start:"))
 async def quest_start(callback: types.CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Назад", callback_data="menu:back")
+    kb.adjust(1)
     quest_id = int(callback.data.split(":")[2])
     quest = quest_repo.get_quest(quest_id)
     player = player_repo.get_player(callback.from_user.id)
