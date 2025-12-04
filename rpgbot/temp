@@ -1,0 +1,1022 @@
+# config.py
+
+# Токен бота (лучше хранить в переменных окружения, но для портфолио можно прямо тут)
+BOT_TOKEN = "8560376370:AAER8fgeUhtGJ4zHsQEqOYrK4NA5GJml5qc"
+PAYMASTER_PROVIDER_TOKEN = "2051251535:TEST:OTk5MDA4ODgxLTAwNQ"
+
+# Путь к базе данных
+DB_PATH = "database.db"
+
+# Настройки игры
+DEFAULT_HP = 100
+DEFAULT_MANA = 50
+DEFAULT_GOLD = 0
+DEFAULT_DIAMONDS = 0
+
+# Логирование (можно расширить)
+LOG_LEVEL = "INFO"
+import asyncio
+from aiogram import Bot, Dispatcher
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from config import BOT_TOKEN
+from setup import Init
+from handlers import start, profile, fight, shop, quests
+
+
+async def main():
+    # Автоматическая инициализация базы
+    Init.setup_all()
+
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+
+    dp = Dispatcher()
+
+    # Подключаем роутеры
+    dp.include_router(start.router)
+    dp.include_router(profile.router)
+    dp.include_router(fight.router)
+    dp.include_router(shop.router)
+    dp.include_router(quests.router)
+
+    # Запуск
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+import sqlite3
+from config import DB_PATH, DEFAULT_HP, DEFAULT_GOLD, DEFAULT_DIAMONDS, DEFAULT_MANA
+
+
+class Init:
+    @staticmethod
+    def create_players():
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+            CREATE TABLE IF NOT EXISTS players (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                class TEXT,
+                level INTEGER DEFAULT 1,
+                hp INTEGER DEFAULT {DEFAULT_HP},
+                max_hp INTEGER DEFAULT {DEFAULT_HP},
+                max_inventory_slots INTEGER DEFAULT 20,
+                mana INTEGER DEFAULT {DEFAULT_MANA},
+                max_mana INTEGER DEFAULT {DEFAULT_MANA},
+                exp INTEGER DEFAULT 0,
+                gold INTEGER DEFAULT {DEFAULT_GOLD},
+                diamonds INTEGER DEFAULT {DEFAULT_DIAMONDS}
+            )
+            """
+            )
+            conn.commit()
+
+    @staticmethod
+    def create_mobs():
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS mobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                hp INTEGER,
+                attack INTEGER,
+                exp_reward INTEGER,
+                gold_reward INTEGER,
+                drop_item_id INTEGER
+            )
+            """)
+            # Добавляем базовых мобов, если таблица пустая
+            cur.execute("SELECT COUNT(*) FROM mobs")
+            count = cur.fetchone()[0]
+            if count == 0:
+                cur.executemany(
+                    """
+                INSERT INTO mobs (name, hp, attack, exp_reward, gold_reward, drop_item_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                    [
+                        ("Слизень", 30, 5, 10, 5, None),
+                        ("Гоблин", 50, 10, 20, 10, None),
+                        ("Орк", 80, 15, 30, 20, None),
+                        ("Дракончик", 120, 20, 50, 50, None),
+                    ],
+                )
+            conn.commit()
+
+    @staticmethod
+    def create_items():
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                type TEXT,
+                power INTEGER,
+                max_count INTEGER DEFAULT 9,
+                price_gold INTEGER,
+                price_diamonds INTEGER
+            )
+            """)
+            conn.commit()
+
+    @staticmethod
+    def create_inventory():
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS inventory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_id INTEGER,
+                item_id INTEGER,
+                quantity INTEGER DEFAULT 1
+            )
+            """)
+            conn.commit()
+
+    @staticmethod
+    def create_quests():
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                            
+                CREATE TABLE IF NOT EXISTS quests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    reward_exp INTEGER,
+                    reward_gold INTEGER,
+                    reward_item_id INTEGER,
+                    condition_type TEXT NOT NULL,       -- тип условия: kill_mob, collect_item, reach_level
+                    condition_target INTEGER NOT NULL,  -- ID моба, предмета или уровень
+                    condition_amount INTEGER DEFAULT 1   -- сколько нужно (например: убить 3 моба, собрать 5 предметов)
+                )
+
+            """)
+            conn.commit()
+            cur.execute("SELECT COUNT(*) FROM quests")
+            count = cur.fetchone()[0]
+
+            if count == 0:
+                cur.executemany(
+                    """
+                    INSERT INTO quests (title, description, reward_exp, reward_gold, reward_item_id, condition_type, condition_target, condition_amount)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            "Первый шаг",
+                            "Убей любого моба",
+                            10,
+                            5,
+                            None,
+                            "kill_mob",
+                            0,
+                            1,
+                        ),
+                        (
+                            "Охота на гоблина",
+                            "Победи гоблина",
+                            20,
+                            10,
+                            None,
+                            "kill_mob",
+                            2,
+                            1,
+                        ),
+                        (
+                            "Сила орка",
+                            "Сразись с орком",
+                            30,
+                            20,
+                            None,
+                            "kill_mob",
+                            3,
+                            1,
+                        ),
+                        (
+                            "Драконья угроза",
+                            "Победи дракончика",
+                            50,
+                            50,
+                            None,
+                            "kill_mob",
+                            4,
+                            1,
+                        ),
+                    ],
+                )
+
+            conn.commit()
+
+    @staticmethod
+    def create_battles():
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS battles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_id INTEGER,
+                mob_id INTEGER,
+                mob_hp INTEGER,
+                player_hp INTEGER,
+                status TEXT DEFAULT 'active'
+            )
+            """)
+            conn.commit()
+
+    @staticmethod
+    def create_player_quests():
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS player_quests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_id INTEGER,
+                quest_id INTEGER,
+                status TEXT DEFAULT 'active'
+            )
+            """)
+            conn.commit()
+
+    @staticmethod
+    def setup_all():
+        Init.create_players()
+        Init.create_mobs()
+        Init.create_items()
+        Init.create_inventory()
+        Init.create_quests()
+        Init.create_battles()
+        Init.create_player_quests()
+        print("✅ Все таблицы созданы/проверены!")
+
+
+if __name__ == "__main__":
+    Init.setup_all()
+import sqlite3
+from typing import Optional, List, Tuple
+from config import DB_PATH, DEFAULT_HP, DEFAULT_MANA, DEFAULT_DIAMONDS, DEFAULT_GOLD
+
+
+class Database:
+    def __init__(self, path: str = DB_PATH):
+        self.conn = sqlite3.connect(path)
+        self.cur = self.conn.cursor()
+
+    def execute(self, query: str, params: Tuple = ()):
+        self.cur.execute(query, params)
+        self.conn.commit()
+
+    def fetchone(self, query: str, params: Tuple = ()):
+        self.cur.execute(query, params)
+        return self.cur.fetchone()
+
+    def fetchall(self, query: str, params: Tuple = ()):
+        self.cur.execute(query, params)
+        return self.cur.fetchall()
+
+
+# ------------------ Players ------------------
+class PlayerRepo:
+    def __init__(self, db: Database):
+        self.db = db
+
+    def add_player(self, player_id: int, name: str, player_class: str):
+        self.db.execute(
+            """INSERT INTO players 
+            (id, name, class, level, hp, max_hp, mana, max_mana, exp, gold, diamonds, max_inventory_slots)
+            VALUES (?, ?, ?, 1, ?, ?, ?, ?, 0, ?, ?, 20)""",
+            (
+                player_id,
+                name,
+                player_class,
+                DEFAULT_HP,
+                DEFAULT_HP,
+                DEFAULT_MANA,
+                DEFAULT_MANA,
+                DEFAULT_GOLD,
+                DEFAULT_DIAMONDS,
+            ),
+        )
+
+    def get_player(self, player_id: int) -> Optional[Tuple]:
+        return self.db.fetchone("SELECT * FROM players WHERE id=?", (player_id,))
+
+    def update_hp(self, player_id: int, new_hp: int):
+        self.db.execute("UPDATE players SET hp=? WHERE id=?", (new_hp, player_id))
+
+    def update_gold(self, player_id: int, amount: int):
+        self.db.execute(
+            "UPDATE players SET gold = gold + ? WHERE id=?", (amount, player_id)
+        )
+
+    def update_diamonds(self, player_id: int, amount: int):
+        self.db.execute(
+            "UPDATE players SET diamonds = diamonds + ? WHERE id=?", (amount, player_id)
+        )
+
+
+# ------------------ Mobs ------------------
+class MobRepo:
+    def __init__(self, db: Database):
+        self.db = db
+
+    def list_mobs(self) -> List[Tuple]:
+        return self.db.fetchall("SELECT * FROM mobs")
+
+    def get_mob(self, mob_id: int) -> Optional[Tuple]:
+        return self.db.fetchone("SELECT * FROM mobs WHERE id=?", (mob_id,))
+
+
+# ------------------ Items ------------------
+class ItemRepo:
+    def __init__(self, db: Database):
+        self.db = db
+
+    def list_items(self) -> List[Tuple]:
+        return self.db.fetchall("SELECT * FROM items")
+
+    def get_item(self, item_id: int) -> Optional[Tuple]:
+        return self.db.fetchone("SELECT * FROM items WHERE id=?", (item_id,))
+
+
+# ------------------ Inventory ------------------
+class InventoryRepo:
+    def __init__(self, db: Database):
+        self.db = db
+
+    def add_item_to_player(self, player_id: int, item_id: int, quantity: int = 1):
+        # Проверяем, есть ли предмет у игрока
+        existing = self.db.fetchone(
+            "SELECT id, quantity FROM inventory WHERE player_id=? AND item_id=?",
+            (player_id, item_id),
+        )
+
+        # Узнаём max_count для предмета
+        item = self.db.fetchone("SELECT max_count FROM items WHERE id=?", (item_id,))
+        max_count = item[0] if item else 9
+
+        if existing:
+            inv_id, current_qty = existing
+            new_qty = min(current_qty + quantity, max_count)
+            self.db.execute(
+                "UPDATE inventory SET quantity=? WHERE id=?", (new_qty, inv_id)
+            )
+        else:
+            # Проверяем количество слотов у игрока
+            slots = self.db.fetchone(
+                "SELECT COUNT(*) FROM inventory WHERE player_id=?", (player_id,)
+            )[0]
+
+            max_slots = self.db.fetchone(
+                "SELECT max_inventory_slots FROM players WHERE id=?", (player_id,)
+            )[0]
+
+            if slots < max_slots:
+                self.db.execute(
+                    "INSERT INTO inventory (player_id, item_id, quantity) VALUES (?, ?, ?)",
+                    (player_id, item_id, min(quantity, max_count)),
+                )
+            else:
+                raise Exception("Инвентарь заполнен!")
+
+    def get_inventory(self, player_id: int) -> List[Tuple]:
+        return self.db.fetchall(
+            "SELECT * FROM inventory WHERE player_id=?", (player_id,)
+        )
+
+
+# ------------------ Quests ------------------
+class QuestRepo:
+    def __init__(self, db: Database):
+        self.db = db
+
+    def list_quests(self) -> List[Tuple]:
+        return self.db.fetchall("SELECT * FROM quests")
+
+    def get_quest(self, quest_id: int) -> Optional[Tuple]:
+        return self.db.fetchone("SELECT * FROM quests WHERE id=?", (quest_id,))
+import random
+from aiogram import Router, types, F
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from utils.quests_logic import check_quests
+
+from utils.db import Database, PlayerRepo, MobRepo
+from config import DB_PATH
+
+router = Router()
+db = Database(DB_PATH)
+player_repo = PlayerRepo(db)
+mob_repo = MobRepo(db)
+
+
+def fight_menu():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⚔️ Атака", callback_data="fight:attack")
+    kb.button(text="🛡️ Защита", callback_data="fight:defend")
+    kb.button(text="🔮 Магия", callback_data="fight:magic")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+async def fight_defeat(callback, player, battle_id, name, mob_dmg, text):
+    db.execute("UPDATE battles SET status='finished' WHERE id=?", (battle_id,))
+
+    db.execute("UPDATE players SET hp = max_hp WHERE id=?", (player[0],))
+
+    db.execute("UPDATE players SET mana = max_mana WHERE id=?", (player[0],))
+
+    lost_gold = int(player[10] * 0.2)  # player[10] = gold
+    db.execute("UPDATE players SET gold = gold - ? WHERE id=?", (lost_gold, player[0]))
+
+    db.execute("UPDATE players SET exp = 0 WHERE id=?", (player[0],))
+
+    await callback.message.edit_text(
+        text + f"👊 {name} нанёс {mob_dmg}.\n💀 Ты проиграл!\n"
+        f"❤️ HP восстановлено до {player[5]}.\n"
+        f"💰 Потеряно {lost_gold} золота.\n"
+        f"📈 Опыт обнулён."
+    )
+
+
+@router.callback_query(F.data == "fight:start")
+async def start_fight(callback: types.CallbackQuery):
+    player = player_repo.get_player(callback.from_user.id)
+    if not player:
+        await callback.answer("Сначала зарегистрируйся!", show_alert=True)
+        return
+
+    # Завершаем старый бой, если он ещё активен
+    db.execute(
+        "UPDATE battles SET status='finished' WHERE player_id=? AND status='active'",
+        (player[0],),
+    )
+
+    mobs = mob_repo.list_mobs()
+    if not mobs:
+        await callback.answer("Нет мобов в базе!", show_alert=True)
+        return
+
+    mob = random.choice(mobs)
+    mob_id = mob[0]  # id моба
+    name = mob[1]  # имя
+    hp = mob[2]  # здоровье
+    attack = mob[3]  # сила атаки
+    exp_reward = mob[4]  # опыт
+    gold_reward = mob[5]  # золото
+    drop_item_id = mob[6]  # предмет
+
+    # создаём новую запись боя
+    db.execute(
+        "INSERT INTO battles (player_id, mob_id, mob_hp, player_hp, status) VALUES (?, ?, ?, ?, 'active')",
+        (player[0], mob_id, hp, player[4]),
+    )
+
+    await callback.message.edit_text(
+        f"⚔️ Ты встретил {name}!\n❤️ HP моба: {hp}\nВыбери действие:",
+        reply_markup=fight_menu(),
+    )
+
+
+@router.callback_query(F.data == "fight:attack")
+async def player_attack(callback: types.CallbackQuery):
+    player = player_repo.get_player(callback.from_user.id)
+    battle = db.fetchone(
+        "SELECT id, mob_id, mob_hp, player_hp FROM battles WHERE player_id=? AND status='active'",
+        (player[0],),
+    )
+    if not battle:
+        await callback.answer("Бой не найден!", show_alert=True)
+        return
+
+    battle_id, mob_id, mob_hp, player_hp = battle
+    mob = mob_repo.get_mob(mob_id)
+    name = mob[1]
+    attack = mob[3]
+    exp_reward = mob[4]
+    gold_reward = mob[5]
+
+    # Игрок наносит урон
+    dmg = random.randint(5, 15)
+    mob_hp = max(mob_hp - dmg, 0)
+
+    text = f"⚔️ Ты ударил {name} на {dmg}!\n"
+
+    if mob_hp <= 0:
+        # Победа
+        player_repo.update_gold(player[0], gold_reward)
+        db.execute("UPDATE battles SET status='finished' WHERE id=?", (battle_id,))
+        db.execute(
+            "UPDATE players SET exp = exp + ? WHERE id=?", (exp_reward, player[0])
+        )
+
+        drop_text = ""
+        if drop_item_id:
+            # Добавляем предмет игроку
+            inventory_repo.add_item_to_player(player[0], drop_item_id, 1)
+            item = db.fetchone("SELECT name FROM items WHERE id=?", (drop_item_id,))
+            drop_text = (
+                f"\n🎁 Выпал предмет: {item[0]}" if item else "\n🎁 Выпал предмет!"
+            )
+
+        await callback.message.edit_text(
+            text + f"🎉 Победа над {name}!\n"
+            f"📈 EXP: {exp_reward}\n"
+            f"💰 Gold: {gold_reward}"
+            f"{drop_text}"
+        )
+
+        # Проверка квестов (например kill_mob)
+        messages = check_quests(player[0], "kill_mob", mob_id, 1)
+        for msg in messages:
+            await callback.message.answer(msg)
+
+    return
+    # Моб отвечает
+    mob_dmg = random.randint(1, attack)
+    player_hp = max(player_hp - mob_dmg, 0)
+    player_repo.update_hp(player[0], player_hp)
+
+    if player_hp <= 0:
+        await fight_defeat(callback, player, battle_id, name, mob_dmg, text)
+    else:
+        db.execute(
+            "UPDATE battles SET mob_hp=?, player_hp=? WHERE id=?",
+            (mob_hp, player_hp, battle_id),
+        )
+        await callback.message.edit_text(
+            text + f"👊 {name} ответил и нанёс {mob_dmg}.\n"
+            f"❤️ Твоё HP: {player_hp}/{player[5]}\n"
+            f"💀 HP моба: {mob_hp}\n"
+            f"Выбери действие:",
+            reply_markup=fight_menu(),
+        )
+
+
+@router.callback_query(F.data == "fight:defend")
+async def player_defend(callback: types.CallbackQuery):
+    player = player_repo.get_player(callback.from_user.id)
+    battle = db.fetchone(
+        "SELECT id, mob_id, mob_hp, player_hp FROM battles WHERE player_id=? AND status='active'",
+        (player[0],),
+    )
+    if not battle:
+        await callback.answer("Бой не найден!", show_alert=True)
+        return
+
+    battle_id, mob_id, mob_hp, player_hp = battle
+    mob = mob_repo.get_mob(mob_id)
+    name = mob[1]
+    attack = mob[3]
+    exp_reward = mob[4]
+    gold_reward = mob[5]
+
+    # Игрок наносит небольшой урон при защите
+    dmg = random.randint(3, 8)
+    mob_hp = max(mob_hp - dmg, 0)
+
+    # Моб наносит уменьшенный урон
+    mob_dmg = max(random.randint(1, attack) // 2, 0)
+    player_hp = max(player_hp - mob_dmg, 0)
+    player_repo.update_hp(player[0], player_hp)
+
+    text = f"🛡️ Ты защищаешься и наносишь {dmg} урона {name}!\n"
+
+    if mob_hp <= 0:
+        player_repo.update_gold(player[0], gold_reward)
+        db.execute("UPDATE battles SET status='finished' WHERE id=?", (battle_id,))
+        await callback.message.edit_text(
+            text + f"🎉 Победа над {name}!\n"
+            f"📈 EXP: {exp_reward}\n"
+            f"💰 Gold: {gold_reward}"
+        )
+        return
+
+    if player_hp <= 0:
+        await fight_defeat(callback, player, battle_id, name, mob_dmg, text)
+
+    else:
+        db.execute(
+            "UPDATE battles SET mob_hp=?, player_hp=? WHERE id=?",
+            (mob_hp, player_hp, battle_id),
+        )
+        await callback.message.edit_text(
+            text + f"👊 {name} атакует, но твоя защита снижает урон!\n"
+            f"❤️ Твоё HP: {player_hp}/{player[5]}\n"
+            f"💀 HP моба: {mob_hp}\n"
+            f"Выбери действие:",
+            reply_markup=fight_menu(),
+        )
+
+
+@router.callback_query(F.data == "fight:magic")
+async def player_magic(callback: types.CallbackQuery):
+    player = player_repo.get_player(callback.from_user.id)
+    if not player:
+        await callback.answer("Сначала зарегистрируйся!", show_alert=True)
+        return
+
+    # Ищем активный бой
+    battle = db.fetchone(
+        "SELECT id, mob_id, mob_hp, player_hp FROM battles WHERE player_id=? AND status='active'",
+        (player[0],),
+    )
+    if not battle:
+        await callback.answer("Бой не найден!", show_alert=True)
+        return
+
+    battle_id, mob_id, mob_hp, player_hp = battle
+
+    # Получаем моба из БД
+    mob = mob_repo.get_mob(mob_id)
+    if not mob:
+        await callback.answer("Моб не найден!", show_alert=True)
+        return
+
+    name = mob[1]
+    attack = mob[3]
+    exp_reward = mob[4]
+    gold_reward = mob[5]
+
+    # Проверяем ману (player[6] = mana, player[7] = max_mana)
+    if player[6] < 10:
+        await callback.answer("Недостаточно маны (нужно 10)!", show_alert=True)
+        return
+
+    # Магия: высокий урон, расход маны
+    dmg = random.randint(15, 30)
+    mob_hp = max(mob_hp - dmg, 0)
+
+    # Списываем 10 маны
+    new_mana = max(player[6] - 10, 0)
+    db.execute("UPDATE players SET mana=? WHERE id=?", (new_mana, player[0]))
+
+    text = f"🔮 Ты используешь магию и наносишь {dmg} урона {name}!\n"
+
+    # Если моб погиб — победа
+    if mob_hp <= 0:
+        player_repo.update_gold(player[0], gold_reward)
+        db.execute("UPDATE battles SET status='finished' WHERE id=?", (battle_id,))
+        await callback.message.edit_text(
+            text + f"🎉 Победа над {name}!\n"
+            f"📈 EXP: {exp_reward}\n"
+            f"💰 Gold: {gold_reward}\n"
+            f"🔮 Твоя мана: {new_mana}/{player[7]}"
+        )
+        return
+
+    # Иначе моб отвечает
+    mob_dmg = random.randint(1, attack)
+    player_hp = max(player_hp - mob_dmg, 0)
+    player_repo.update_hp(player[0], player_hp)
+
+    if player_hp <= 0:
+        await fight_defeat(callback, player, battle_id, name, mob_dmg, text)
+    else:
+        # Обновляем состояние боя и показываем меню
+        db.execute(
+            "UPDATE battles SET mob_hp=?, player_hp=? WHERE id=?",
+            (mob_hp, player_hp, battle_id),
+        )
+        await callback.message.edit_text(
+            text + f"👊 {name} ответил и нанёс {mob_dmg}.\n"
+            f"❤️ Твоё HP: {player_hp}/{player[5]}\n"
+            f"💀 HP моба: {mob_hp}\n"
+            f"🔮 Твоя мана: {new_mana}/{player[7]}\n"
+            f"Выбери действие:",
+            reply_markup=fight_menu(),
+        )
+from aiogram import Router, types, F
+
+from utils.db import Database, PlayerRepo
+from config import DB_PATH
+
+router = Router()
+db = Database(DB_PATH)
+player_repo = PlayerRepo(db)
+
+
+@router.callback_query(F.data == "profile:show")
+async def show_profile(callback: types.CallbackQuery):
+    player = player_repo.get_player(callback.from_user.id)
+    if player:
+        # player = (id, name, class, level, hp, max_hp, mana, max_mana, exp, gold, diamonds)
+        (
+            _,
+            name,
+            cls,
+            lvl,
+            hp,
+            max_hp,
+            max_inventory_slots,
+            mana,
+            max_mana,
+            exp,
+            gold,
+            diamonds,
+        ) = player
+
+        kb = types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [types.InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")]
+            ]
+        )
+
+        await callback.message.edit_text(
+            f"👤 {name}\n⚔️ Класс: {cls}\n⭐ Уровень: {lvl}\n❤️ HP: {hp}/{max_hp}\n🔮 Mana: {mana}/{max_mana}\n📈 EXP: {exp}\n💰 Gold: {gold}\n💎 Diamonds: {diamonds}",
+            reply_markup=kb,
+        )
+    else:
+        await callback.answer("Ты ещё не зарегистрирован!", show_alert=True)
+from aiogram import Router, types, F
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from utils.db import Database, QuestRepo, PlayerRepo, InventoryRepo
+from config import DB_PATH
+
+router = Router()
+db = Database(DB_PATH)
+quest_repo = QuestRepo(db)
+player_repo = PlayerRepo(db)
+inventory_repo = InventoryRepo(db)
+
+
+@router.callback_query(F.data == "quests:menu")
+async def quests_menu(callback: types.CallbackQuery):
+    quests = quest_repo.list_quests()
+    if not quests:
+        await callback.answer("Нет доступных квестов!", show_alert=True)
+        return
+
+    kb = InlineKeyboardBuilder()
+    text = "🎯 Доступные квесты:\n"
+    for (
+        quest_id,
+        title,
+        description,
+        reward_exp,
+        reward_gold,
+        reward_item_id,
+        condition_type,
+        condition_target,
+        condition_amount,
+    ) in quests:
+        text += f"\n{title} — {description}"
+        kb.button(text=f"Взять {title}", callback_data=f"quest:start:{quest_id}")
+    kb.adjust(1)
+
+    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data.startswith("quest:start:"))
+async def quest_start(callback: types.CallbackQuery):
+    quest_id = int(callback.data.split(":")[2])
+    quest = quest_repo.get_quest(quest_id)
+    player = player_repo.get_player(callback.from_user.id)
+
+    if not quest:
+        await callback.answer("Квест не найден!", show_alert=True)
+        return
+
+    # Проверяем, есть ли запись в player_quests
+    existing = db.fetchone(
+        "SELECT status FROM player_quests WHERE player_id=? AND quest_id=?",
+        (player[0], quest_id),
+    )
+
+    if existing:
+        if existing[0] == "completed":
+            await callback.answer("Ты уже выполнил этот квест!", show_alert=True)
+            return
+        elif existing[0] == "active":
+            await callback.answer("Квест уже активен!", show_alert=True)
+            return
+
+    # Создаём запись о квесте
+    db.execute(
+        "INSERT INTO player_quests (player_id, quest_id, status) VALUES (?, ?, 'active')",
+        (player[0], quest_id),
+    )
+
+    (
+        _,
+        title,
+        description,
+        reward_exp,
+        reward_gold,
+        reward_item_id,
+        condition_type,
+        condition_target,
+        condition_amount,
+    ) = quest
+
+    await callback.message.edit_text(
+        f"🎯 Квест '{title}' взят!\n"
+        f"Описание: {description}\n"
+        f"Награда: {reward_exp} EXP, {reward_gold}💰, "
+        f"{reward_item_id if reward_item_id else '—'}"
+    )
+
+
+@router.callback_query(F.data.startswith("quest:complete:"))
+async def quest_complete(callback: types.CallbackQuery):
+    quest_id = int(callback.data.split(":")[2])
+    quest = quest_repo.get_quest(quest_id)
+    player = player_repo.get_player(callback.from_user.id)
+
+    if not quest:
+        await callback.answer("Квест не найден!", show_alert=True)
+        return
+
+    # Проверяем статус
+    existing = db.fetchone(
+        "SELECT status FROM player_quests WHERE player_id=? AND quest_id=?",
+        (player[0], quest_id),
+    )
+
+    if not existing or existing[0] != "active":
+        await callback.answer("Квест не активен!", show_alert=True)
+        return
+
+    # Меняем статус на completed
+    db.execute(
+        "UPDATE player_quests SET status='completed' WHERE player_id=? AND quest_id=?",
+        (player[0], quest_id),
+    )
+
+    _, title, description, reward_exp, reward_gold, reward_item_id = quest
+
+    # Выдаём награду
+    player_repo.update_gold(player[0], reward_gold)
+    db.execute("UPDATE players SET exp = exp + ? WHERE id=?", (reward_exp, player[0]))
+    if reward_item_id:
+        inventory_repo.add_item_to_player(player[0], reward_item_id, 1)
+
+    await callback.message.edit_text(
+        f"🎉 Квест '{title}' выполнен!\n"
+        f"📈 EXP: {reward_exp}\n"
+        f"💰 Gold: {reward_gold}\n"
+        f"🎁 Предмет: {reward_item_id if reward_item_id else '—'}"
+    )
+
+from aiogram import Router, types, F
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.filters import Command
+
+from utils.db import Database, ItemRepo, InventoryRepo, PlayerRepo
+from config import DB_PATH, PAYMASTER_PROVIDER_TOKEN
+
+router = Router()
+db = Database(DB_PATH)
+item_repo = ItemRepo(db)
+inventory_repo = InventoryRepo(db)
+player_repo = PlayerRepo(db)
+
+
+@router.callback_query(F.data == "shop:menu")
+async def shop_menu(callback: types.CallbackQuery):
+    items = item_repo.list_items()
+    kb = InlineKeyboardBuilder()
+    text = "🛒 Магазин:\n"
+
+    if items:
+        for item_id, name, type_, power, max_count, price_gold, price_diamonds in items:
+            text += f"\n{name} ({type_}) — {price_gold}💰 / {price_diamonds}💎"
+            kb.button(text=f"Купить {name}", callback_data=f"shop:buy:{item_id}")
+
+    # кнопка доната
+    kb.button(text="💎 Купить алмазы (донат)", callback_data="shop:donate")
+    kb.button(text="⬅️ Назад", callback_data="menu:back")
+    kb.adjust(1)
+
+    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data.startswith("shop:buy:"))
+async def shop_buy(callback: types.CallbackQuery):
+    item_id = int(callback.data.split(":")[2])
+    player = player_repo.get_player(callback.from_user.id)
+    item = item_repo.get_item(item_id)
+
+    if not item:
+        await callback.answer("Такого предмета нет!", show_alert=True)
+        return
+
+    _, name, type_, power, max_count, price_gold, price_diamonds = item
+
+    if player[10] < price_gold:  # gold
+        await callback.answer("Недостаточно золота!", show_alert=True)
+        return
+
+    # списываем золото
+    player_repo.update_gold(player[0], -price_gold)
+    # добавляем предмет
+    inventory_repo.add_item_to_player(player[0], item_id, 1)
+
+    await callback.message.edit_text(f"✅ Ты купил {name} за {price_gold}💰!")
+
+
+# ==========================
+# СИСТЕМА ДОНАТОВ PAYMASTER
+# ==========================
+
+
+@router.callback_query(F.data == "shop:donate")
+async def shop_donate(callback: types.CallbackQuery):
+    # Пример: продаём 100 алмазов за 5$
+    await callback.message.answer_invoice(
+        title="💎 Алмазы",
+        description="Пакет 100 алмазов",
+        payload=f"diamonds:{callback.from_user.id}:100",  # payload для идентификации
+        provider_token=PAYMASTER_PROVIDER_TOKEN,
+        currency="USD",
+        prices=[types.LabeledPrice(label="100 алмазов", amount=500)],  # 500 = $5.00
+    )
+
+
+@router.pre_checkout_query()
+async def process_pre_checkout(pre_checkout_query: types.PreCheckoutQuery):
+    # подтверждаем оплату
+    await pre_checkout_query.answer(ok=True)
+
+
+@router.message(F.successful_payment)
+async def process_successful_payment(msg: types.Message):
+    payload = msg.successful_payment.invoice_payload
+    if payload.startswith("diamonds:"):
+        _, player_id, diamonds = payload.split(":")
+        player_repo.update_diamonds(int(player_id), int(diamonds))
+        await msg.answer(f"✅ Оплата прошла! Зачислено {diamonds}💎")
+from aiogram import Router, types, F
+from aiogram.filters import Command
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from utils.db import Database, PlayerRepo
+from config import DB_PATH
+
+router = Router()
+db = Database(DB_PATH)
+player_repo = PlayerRepo(db)
+kb_class = InlineKeyboardBuilder()
+kb_class.button(text="⚔️ Воин", callback_data="class:warrior")
+kb_class.button(text="🔮 Маг", callback_data="class:mage")
+kb_class.button(text="🗡️ Вор", callback_data="class:rogue")
+kb_class.adjust(1)
+
+kb_menu = InlineKeyboardBuilder()
+kb_menu.button(text="⚔️ В бой", callback_data="fight:start")
+kb_menu.button(text="🎯 Квесты", callback_data="quests:menu")
+kb_menu.button(text="🛒 Магазин", callback_data="shop:menu")
+kb_menu.button(text="👤 Профиль", callback_data="profile:show")
+kb_menu.adjust(2)
+
+
+@router.message(Command("start"))
+async def cmd_start(msg: types.Message):
+    player = player_repo.get_player(msg.from_user.id)
+
+    if player is None:
+        # Кнопки выбора класса
+        await msg.answer("Выбери класс персонажа:", reply_markup=kb_class.as_markup())
+
+    else:
+        await msg.answer("Главное меню:", reply_markup=kb_menu.as_markup())
+
+
+@router.callback_query(F.data.startswith("menu:back"))
+async def back(callback: types.CallbackQuery):
+    player = player_repo.get_player(callback.from_user.id)
+    if player is None:
+        # Кнопки выбора класса
+        await callback.message.edit_text(
+            "Выбери класс персонажа:", reply_markup=kb_class.as_markup()
+        )
+
+    else:
+        await callback.message.edit_text(
+            "Главное меню:", reply_markup=kb_menu.as_markup()
+        )
+
+
+@router.callback_query(F.data.startswith("class:"))
+async def choose_class(callback: types.CallbackQuery):
+    chosen_class = callback.data.split(":")[1]
+    player_repo.add_player(
+        player_id=callback.from_user.id,
+        name=callback.from_user.first_name,
+        player_class=chosen_class,
+    )
+    await callback.message.edit_text(
+        f"🎉 Персонаж создан!\n"
+        f"Класс: {chosen_class.capitalize()}\n"
+        f"Теперь можно открыть 👤 Профиль.",
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [types.InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")]
+            ]
+        ),
+    )
