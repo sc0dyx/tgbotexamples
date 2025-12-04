@@ -144,7 +144,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-
+#empty files
+temp
 #sqlite3
 database.db
 
