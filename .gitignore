@@ -135,8 +135,6 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
-#temp
-AIbot
 
 # Environments
 .env
