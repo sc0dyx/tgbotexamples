@@ -5,6 +5,7 @@ PAYMASTER_PROVIDER_TOKEN = "MASTER_PAY"
 # Путь к базе данных
 DB_PATH = "database.db"
 
+# -------------
 # Настройки игры
 DEFAULT_HP = 100
 DEFAULT_MANA = 50
