@@ -135,8 +135,7 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
-AIbot/models/*
-
+AIbot/models/model-q8_0.gguf
 # Environments
 .env
 .envrc
