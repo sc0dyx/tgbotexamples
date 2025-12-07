@@ -10,7 +10,7 @@ python -m venv .venv
 source .venv/bin/activate
 ```
 ```cmd
-.venv/bin/activate.bat
+.venv\bin\activate.bat
 ```
 ```bash
 pip install -r requirements.txt
@@ -23,10 +23,10 @@ cd currencybot
 python -m venv .venv
 ```
 ```cmd
-.venv/bin/activate.bat
+.venv\bin\activate.bat
 ```
 ```bash
-source .venv/bin/activate
+source .venv\bin\activate
 pip install -r requirements.txt
 python main.py
 ```
@@ -36,7 +36,7 @@ cd rpgbot
 python -m venv .venv
 ```
 ```cmd
-.venv/bin/activate.bat
+.venv\bin\activate.bat
 ```
 ```bash
 source .venv/bin/activate
