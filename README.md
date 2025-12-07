@@ -8,6 +8,11 @@ cd tgbotexamples
 cd AIbot
 python -m venv .venv
 source .venv/bin/activate
+```
+```cmd
+.venv/bin/activate.bat
+```
+```bash
 pip install -r requirements.txt
 wget -O models/model-q8_0.gguf 'https://huggingface.co/IlyaGusev/saiga_llama3_8b_gguf/resolve/main/model-q8_0.gguf?download=true'
 python main.py
@@ -16,6 +21,11 @@ python main.py
 ```bash
 cd currencybot
 python -m venv .venv
+```
+```cmd
+.venv/bin/activate.bat
+```
+```bash
 source .venv/bin/activate
 pip install -r requirements.txt
 python main.py
@@ -24,6 +34,11 @@ python main.py
 ```bash
 cd rpgbot
 python -m venv .venv
+```
+```cmd
+.venv/bin/activate.bat
+```
+```bash
 source .venv/bin/activate
 pip install -r requirements.txt
 python main.py
